@@ -25,4 +25,26 @@ DHCP 的 `start=100`、`limit=150` 保持不变。脚本通过 DHCP 选项 3 和
 ```sh
 logread -e bypass-network-detect
 ```
+
+取消开机检测：
+
+```sh
+/etc/init.d/bypass-network-detect disable
+/etc/init.d/bypass-network-detect stop
+```
+
+这只会停止后续开机自动探测，不会恢复已经写入的网络配置。若要恢复为手动配置，请编辑 `/etc/config/network` 和 `/etc/config/dhcp`，再执行：
+
+```sh
+uci commit network
+uci commit dhcp
+/etc/init.d/network restart
+/etc/init.d/dnsmasq restart
+```
+
+确认不再需要脚本时，可以删除启动文件：
+
+```sh
+rm -f /etc/init.d/bypass-network-detect
+```
 z-openwrt
