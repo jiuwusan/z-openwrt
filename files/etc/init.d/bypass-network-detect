@@ -44,6 +44,45 @@ temporary_probe() {
     return 1
 }
 
+random_host() {
+    if [ -r /dev/urandom ]; then
+        value=$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')
+        case "$value" in
+            ''|*[!0-9]*) ;;
+            *) echo $((value % 98 + 2)); return 0 ;;
+        esac
+    fi
+    echo $((($$ + ${RANDOM:-0}) % 98 + 2))
+}
+
+probe_subnet_randomly() {
+    gw=$1
+    prefix=${gw%.*}
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        host=$(random_host)
+        candidate="$prefix.$host"
+        if temporary_probe "$gw" "$candidate"; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+probe_subnet_sequentially() {
+    gw=$1
+    prefix=${gw%.*}
+    host=2
+    while [ "$host" -le 99 ]; do
+        if temporary_probe "$gw" "$prefix.$host"; then
+            return 0
+        fi
+        host=$((host + 1))
+    done
+    return 1
+}
+
 set_network_option() {
     key=$1
     value=$2
@@ -128,6 +167,14 @@ detect() {
     GATEWAYS="192.168.1.1 192.168.0.1 192.168.3.1 192.168.31.1 192.168.50.1 192.168.68.1 192.168.100.1"
     for gw in $GATEWAYS; do
         prefix=${gw%.*}
+        # First identify the active subnet with up to three random probes.
+        # This avoids scanning .2-.99 for every wrong gateway.
+        if ! probe_subnet_randomly "$gw"; then
+            # Keep a deterministic fallback for occupied random candidates.
+            probe_subnet_sequentially "$gw" || continue
+        fi
+
+        # The subnet is known. Pick the first free stable address in order.
         host=2
         while [ "$host" -le 99 ]; do
             candidate="$prefix.$host"

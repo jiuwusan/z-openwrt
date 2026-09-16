@@ -11,5 +11,8 @@ if ($script -notmatch 'host=2') { throw 'Static-IP scan start is missing' }
 if ($script -notmatch 'host.*-le 99') { throw 'Static-IP scan upper bound is missing' }
 if ($script -notmatch 'ip neigh show dev') { throw 'Neighbour-table collision fallback is missing' }
 if ($script -notmatch 'arping not installed') { throw 'Missing arping warning is absent' }
+if ($script -notmatch 'probe_subnet_randomly') { throw 'Random subnet probing is missing' }
+if ($script -notmatch 'attempt.*-le 3') { throw 'Random probe retry limit is missing' }
+if ($script -notmatch 'value % 98 \+ 2') { throw 'Random probe range is missing' }
 if ($script -notmatch 'start=100 and limit=150 remain relative') { throw 'DHCP pool preservation is missing' }
 Write-Output 'PASS: bypass-network-detect static checks'
