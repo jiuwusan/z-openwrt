@@ -114,7 +114,8 @@ detect() {
     GATEWAYS="192.168.1.1 192.168.0.1 192.168.3.1 192.168.31.1 192.168.50.1 192.168.68.1 192.168.100.1"
     for gw in $GATEWAYS; do
         prefix=${gw%.*}
-        for host in 2 3 4 5; do
+        host=2
+        while [ "$host" -le 99 ]; do
             candidate="$prefix.$host"
             if temporary_probe "$gw" "$candidate"; then
                 if configure "$gw" "$candidate"; then
@@ -124,6 +125,7 @@ detect() {
                 fi
                 log "could not commit configuration for $gw/$candidate"
             fi
+            host=$((host + 1))
         done
     done
 
