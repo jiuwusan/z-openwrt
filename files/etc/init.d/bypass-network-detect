@@ -14,8 +14,21 @@ gateway_up() {
 }
 
 address_free() {
-    command -v arping >/dev/null 2>&1 || return 0
-    arping -D -I "$DEVICE" -c 2 -w 1 "$1" >/dev/null 2>&1
+    candidate=$1
+    if command -v arping >/dev/null 2>&1; then
+        # Duplicate-address detection: a reply means the candidate is used.
+        arping -D -I "$DEVICE" -c 2 "$candidate" >/dev/null 2>&1
+        return $?
+    fi
+
+    # Fallback for images without arping.  An existing neighbour entry or a
+    # successful probe means the address is already in use.  This is weaker
+    # than arping, so the log calls it out during detection.
+    if ip neigh show dev "$DEVICE" "$candidate" 2>/dev/null | grep -q 'lladdr'; then
+        return 1
+    fi
+    ping -c 1 -W 1 -I "$DEVICE" "$candidate" >/dev/null 2>&1 && return 1
+    return 0
 }
 
 temporary_probe() {
@@ -91,6 +104,7 @@ configure() {
 detect() {
     DEVICE="$(uci -q get network.lan.device || true)"
     [ -n "$DEVICE" ] || DEVICE=br-lan
+    command -v arping >/dev/null 2>&1 || log "arping not installed; using weaker IP/neighbour fallback"
 
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
         log "already running"

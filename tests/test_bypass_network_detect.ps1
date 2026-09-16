@@ -9,5 +9,7 @@ if ($script -notmatch 'wanted_options=.*3,\$ip.*6,\$ip') { throw 'DHCP gateway/D
 if ($script -notmatch 'add_list dhcp\.lan\.dhcp_option="\$option"') { throw 'DHCP options are not written as list entries' }
 if ($script -notmatch 'host=2') { throw 'Static-IP scan start is missing' }
 if ($script -notmatch 'host.*-le 99') { throw 'Static-IP scan upper bound is missing' }
+if ($script -notmatch 'ip neigh show dev') { throw 'Neighbour-table collision fallback is missing' }
+if ($script -notmatch 'arping not installed') { throw 'Missing arping warning is absent' }
 if ($script -notmatch 'start=100 and limit=150 remain relative') { throw 'DHCP pool preservation is missing' }
 Write-Output 'PASS: bypass-network-detect static checks'
