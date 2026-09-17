@@ -50,11 +50,14 @@ address_free() {
 
 # 网段试探：临时把 candidate 以 /24 别名挂到接口上，ping 网关验证连通，
 # 结束时无论成败都撤掉别名。成功返回 0 表示该网段（网关）确实活跃。
+# 失败时置 ADDRESS_BUSY=1，用于区分「候选被占用」和「网关不可达」：
+# 只有前者才值得进入顺序扫描，后者说明网段根本不存在。
 temporary_probe() {
     gw=$1
     ip=$2
-    address_free "$ip" || return 1
-    ip -4 addr add "$ip/24" dev "$DEVICE" label "$DEVICE:detect" 2>/dev/null || return 1
+    ADDRESS_BUSY=0
+    address_free "$ip" || { ADDRESS_BUSY=1; return 1; }
+    ip -4 addr add "$ip/24" dev "$DEVICE" label "$DEVICE:detect" 2>/dev/null || { ADDRESS_BUSY=1; return 1; }
     if gateway_up "$gw"; then
         ip -4 addr del "$ip/24" dev "$DEVICE" 2>/dev/null
         return 0
@@ -75,7 +78,9 @@ random_host() {
     echo $((($$ + ${RANDOM:-0}) % 98 + 2))
 }
 
-# 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .99-.2
+# 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .99-.2。
+# 返回 1 时若 ADDRESS_BUSY=1，说明随机候选均被占用（网段大概率活跃），
+# 值得顺序扫描；ADDRESS_BUSY=0 则是网关不可达，网段不存在，应直接跳过。
 probe_subnet_randomly() {
     gw=$1
     prefix=${gw%.*}
@@ -86,6 +91,7 @@ probe_subnet_randomly() {
         if temporary_probe "$gw" "$candidate"; then
             return 0
         fi
+        [ "$ADDRESS_BUSY" -eq 1 ] || return 1
         attempt=$((attempt + 1))
     done
     return 1
@@ -190,11 +196,19 @@ detect() {
     [ -n "$DEVICE" ] || DEVICE=br-lan
     command -v arping >/dev/null 2>&1 || log "arping not installed; using weaker IP/neighbour fallback"
 
-    # mkdir 在已存在时失败，是原子的抢锁方式；防止多个实例同时改配置
+    # mkdir 抢锁（原子）；失败时检查锁内 PID 是否存活，清理陈旧锁
+    # （SIGKILL/断电留下的残留，否则本次开机检测永久失效）
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-        log "already running"
-        return 0
+        stale_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+        if [ -n "$stale_pid" ] && [ -d "/proc/$stale_pid" ]; then
+            log "already running (pid $stale_pid)"
+            return 0
+        fi
+        log "removing stale lock (pid ${stale_pid:-unknown})"
+        rm -rf "$LOCK_DIR"
+        mkdir "$LOCK_DIR" 2>/dev/null || { log "cannot acquire lock"; return 0; }
     fi
+    echo $$ > "$LOCK_DIR/pid"
     trap cleanup EXIT INT TERM
 
     # 快路径：现有配置有效（IP/网关格式合法、网关可达、本机 IP 无冲突）
@@ -215,10 +229,12 @@ detect() {
     GATEWAYS="192.168.1.1 192.168.0.1 192.168.3.1 192.168.31.1 192.168.50.1 192.168.68.1 192.168.100.1"
     for gw in $GATEWAYS; do
         prefix=${gw%.*}
-        # 先用最多 3 次随机探测确认网段活跃，
-        # 避免对每个错误网关都全量扫描 .99-.2
+        # 先用最多 3 次随机探测确认网段活跃。仅当随机候选均被占用
+        # （ADDRESS_BUSY=1）才顺序扫描；网关不可达的死网段直接跳过，
+        # 避免每个错误网关都耗时的全量扫描。
         if ! probe_subnet_randomly "$gw"; then
-            # 随机候选都被占用时，退化为确定性顺序扫描
+            [ "$ADDRESS_BUSY" -eq 1 ] || continue
+            # 随机候选都被占用时，退化为确定性递减扫描
             probe_subnet_sequentially "$gw" || continue
         fi
 
