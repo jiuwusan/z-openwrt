@@ -1,0 +1,4 @@
+* text=auto
+*.sh text eol=lf
+files/etc/init.d/* text eol=lf
+files/etc/**/* text eol=lf
