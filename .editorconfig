@@ -1,0 +1,17 @@
+# EditorConfig：让编辑器与 .gitattributes 保持一致的换行符策略
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Windows 专用脚本保持 CRLF
+[*.{ps1,bat,cmd}]
+end_of_line = crlf
+
+# Makefile 必须用真 Tab 缩进
+[Makefile]
+indent_style = tab
