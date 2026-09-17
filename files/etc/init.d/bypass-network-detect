@@ -1,4 +1,16 @@
 #!/bin/sh /etc/rc.common
+# bypass-network-detect
+#
+# 用途：设备作为二级路由接入上级路由时，开机自动探测上游网段，为 LAN 口
+# 选择一个与上游同网段且未被占用的静态地址，并写入 UCI（network + dhcp），
+# 避免默认网段（如 192.168.1.x）与上游冲突导致无法上网。
+#
+# 整体流程（见 detect）：
+#   1. 加锁防并发（mkdir 原子操作）。
+#   2. 若现有配置的网关可达、且本机 IP 无冲突，则只刷新 DNS/DHCP 选项。
+#   3. 否则遍历常见家用路由网关地址：先用随机地址探测确认网段活跃，
+#      再从 .2-.99 里选一个空闲 IP，写入静态配置并重启 network/dnsmasq。
+#   4. 所有网关都探测失败则保持原配置不动。
 
 START=99
 STOP=10
@@ -9,14 +21,17 @@ log() { logger -t bypass-network-detect "$*"; }
 cleanup() { rmdir "$LOCK_DIR" 2>/dev/null || true; }
 valid_ipv4() { echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
 
+# 经指定接口 ping 目标（1 包、1 秒超时），用于判断网关是否可达
 gateway_up() {
     ping -c 1 -W 1 -I "$DEVICE" "$1" >/dev/null 2>&1
 }
 
+# 判断候选地址是否空闲（无其他主机占用）
 address_free() {
     candidate=$1
     if command -v arping >/dev/null 2>&1; then
-        # Duplicate-address detection: a reply means the candidate is used.
+        # arping -D 为重复地址检测：有应答说明地址已被占用。
+        # 退出码 0 = 无人应答 = 空闲；1 = 已被占用；其他为出错。
         arping -D -I "$DEVICE" -c 2 -w 1 "$candidate" >/dev/null 2>&1
         result=$?
         [ "$result" -eq 0 ] && return 0
@@ -24,9 +39,8 @@ address_free() {
         return 1
     fi
 
-    # Fallback for images without arping.  An existing neighbour entry or a
-    # successful probe means the address is already in use.  This is weaker
-    # than arping, so the log calls it out during detection.
+    # 无 arping 的固件走弱一级的兜底：已有邻居表项、或 ping 有响应，
+    # 都说明地址已被占用。检测阶段会在日志中提示此方式较弱。
     if ip neigh show dev "$DEVICE" "$candidate" 2>/dev/null | grep -q 'lladdr'; then
         return 1
     fi
@@ -34,6 +48,8 @@ address_free() {
     return 0
 }
 
+# 网段试探：临时把 candidate 以 /24 别名挂到接口上，ping 网关验证连通，
+# 结束时无论成败都撤掉别名。成功返回 0 表示该网段（网关）确实活跃。
 temporary_probe() {
     gw=$1
     ip=$2
@@ -47,6 +63,7 @@ temporary_probe() {
     return 1
 }
 
+# 生成 2-99 的随机主机号：优先读 /dev/urandom 2 字节，失败退化为 PID+RANDOM
 random_host() {
     if [ -r /dev/urandom ]; then
         value=$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')
@@ -58,6 +75,7 @@ random_host() {
     echo $((($$ + ${RANDOM:-0}) % 98 + 2))
 }
 
+# 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .2-.99
 probe_subnet_randomly() {
     gw=$1
     prefix=${gw%.*}
@@ -73,6 +91,7 @@ probe_subnet_randomly() {
     return 1
 }
 
+# 随机探测全被占用时的确定性兜底：顺序扫描 .2-.99
 probe_subnet_sequentially() {
     gw=$1
     prefix=${gw%.*}
@@ -86,6 +105,8 @@ probe_subnet_sequentially() {
     return 1
 }
 
+# 网段已确认后，从 .2-.99 顺序选第一个空闲地址；
+# 此时只做地址冲突检测，不再重复探测网关
 select_free_address() {
     prefix=$1
     host=2
@@ -100,6 +121,7 @@ select_free_address() {
     return 1
 }
 
+# 值未变化时跳过写入，避免无谓的 UCI 提交和 NETWORK_CHANGED 误置位
 set_network_option() {
     key=$1
     value=$2
@@ -108,6 +130,11 @@ set_network_option() {
     NETWORK_CHANGED=1
 }
 
+# 把选定的新网关/本机地址写入 UCI：
+#   network.lan -> 静态地址、掩码、网关、multipath off、DNS 列表
+#   dhcp.lan    -> DHCP 选项 3（网关）和 6（DNS）指向本机 LAN IP，
+#                  其余自定义 dhcp_option 原样保留
+# 只有实际发生变更才 commit 对应配置；commit 失败返回 1。
 configure() {
     gw=$1
     ip=$2
@@ -121,23 +148,24 @@ configure() {
     set_network_option network.lan.gateway "$gw"
     set_network_option network.lan.multipath off
 
+    # DNS：上游网关 + 两个公共 DNS（DNSPod / AliDNS）
     wanted_dns="$gw 119.29.29.29 223.5.5.5"
     if [ "$(uci -q get network.lan.dns || true)" != "$wanted_dns" ]; then
         uci -q delete network.lan.dns
-        uci add_list network.lan.dns="$gw"
-        uci add_list network.lan.dns=119.29.29.29
-        uci add_list network.lan.dns=223.5.5.5
+        uci -q add_list network.lan.dns="$gw"
+        uci -q add_list network.lan.dns=119.29.29.29
+        uci -q add_list network.lan.dns=223.5.5.5
         NETWORK_CHANGED=1
     fi
 
-    # DHCP option 3 is the gateway; option 6 is the preferred DNS.
-    # start=100 and limit=150 remain relative to the selected subnet.
+    # DHCP option 3 = 下发给客户端的网关；option 6 = 下发的 DNS。
+    # start=100 / limit=150 不用改，它们天然基于当前选中的子网。
     if uci -q get dhcp.lan >/dev/null 2>&1; then
         current_options=$(uci -q get dhcp.lan.dhcp_option || true)
         kept_options=
         for option in $current_options; do
             case "$option" in
-                3,*|6,*) ;;
+                3,*|6,*) ;;                      # 旧的 3/6 选项丢弃，下面重建
                 *) kept_options="$kept_options $option" ;;
             esac
         done
@@ -146,7 +174,7 @@ configure() {
         if [ "$current_options" != "$wanted_options" ]; then
             uci -q delete dhcp.lan.dhcp_option
             for option in $wanted_options; do
-                uci add_list dhcp.lan.dhcp_option="$option"
+                uci -q add_list dhcp.lan.dhcp_option="$option"
             done
             DHCP_CHANGED=1
         fi
@@ -162,12 +190,15 @@ detect() {
     [ -n "$DEVICE" ] || DEVICE=br-lan
     command -v arping >/dev/null 2>&1 || log "arping not installed; using weaker IP/neighbour fallback"
 
+    # mkdir 在已存在时失败，是原子的抢锁方式；防止多个实例同时改配置
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
         log "already running"
         return 0
     fi
     trap cleanup EXIT INT TERM
 
+    # 快路径：现有配置有效（IP/网关格式合法、网关可达、本机 IP 无冲突）
+    # 则不换网段，仅刷新 DHCP/DNS 选项后直接返回
     current_ip=$(uci -q get network.lan.ipaddr || true)
     current_gw=$(uci -q get network.lan.gateway || true)
     if valid_ipv4 "$current_ip" && valid_ipv4 "$current_gw" && gateway_up "$current_gw" && address_free "$current_ip"; then
@@ -180,19 +211,19 @@ detect() {
         return 0
     fi
 
-    # Known consumer-router defaults, ordered from most common to less common.
+    # 慢路径：遍历常见家用路由网关地址，按常见程度从高到低排列
     GATEWAYS="192.168.1.1 192.168.0.1 192.168.3.1 192.168.31.1 192.168.50.1 192.168.68.1 192.168.100.1"
     for gw in $GATEWAYS; do
         prefix=${gw%.*}
-        # First identify the active subnet with up to three random probes.
-        # This avoids scanning .2-.99 for every wrong gateway.
+        # 先用最多 3 次随机探测确认网段活跃，
+        # 避免对每个错误网关都全量扫描 .2-.99
         if ! probe_subnet_randomly "$gw"; then
-            # Keep a deterministic fallback for occupied random candidates.
+            # 随机候选都被占用时，退化为确定性顺序扫描
             probe_subnet_sequentially "$gw" || continue
         fi
 
-        # The subnet is known. Only ARP-probe addresses now; the gateway was
-        # already confirmed by the random subnet probe above.
+        # 网段已确认：网关连通性在上面已验证，
+        # 这里只需挑一个空闲地址并写入配置
         if select_free_address "$prefix"; then
             if configure "$gw" "$SELECTED_IP"; then
                 /etc/init.d/network restart >/dev/null 2>&1
@@ -207,6 +238,7 @@ detect() {
     return 1
 }
 
+# 开机时等 3 秒让网络栈/接口就绪后再探测
 boot() {
     sleep 3
     detect
