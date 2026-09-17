@@ -9,7 +9,7 @@
 #   1. 加锁防并发（mkdir 原子操作）。
 #   2. 若现有配置的网关可达、且本机 IP 无冲突，则只刷新 DNS/DHCP 选项。
 #   3. 否则遍历常见家用路由网关地址：先用随机地址探测确认网段活跃，
-#      再从 .2-.99 里选一个空闲 IP，写入静态配置并重启 network/dnsmasq。
+#      再从 .99 向 .2 递减选一个空闲 IP，写入静态配置并重启 network/dnsmasq。
 #   4. 所有网关都探测失败则保持原配置不动。
 
 START=99
@@ -75,7 +75,7 @@ random_host() {
     echo $((($$ + ${RANDOM:-0}) % 98 + 2))
 }
 
-# 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .2-.99
+# 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .99-.2
 probe_subnet_randomly() {
     gw=$1
     prefix=${gw%.*}
@@ -91,32 +91,32 @@ probe_subnet_randomly() {
     return 1
 }
 
-# 随机探测全被占用时的确定性兜底：顺序扫描 .2-.99
+# 随机探测全被占用时的确定性兜底：从 .99 向 .2 递减扫描
 probe_subnet_sequentially() {
     gw=$1
     prefix=${gw%.*}
-    host=2
-    while [ "$host" -le 99 ]; do
+    host=99
+    while [ "$host" -ge 2 ]; do
         if temporary_probe "$gw" "$prefix.$host"; then
             return 0
         fi
-        host=$((host + 1))
+        host=$((host - 1))
     done
     return 1
 }
 
-# 网段已确认后，从 .2-.99 顺序选第一个空闲地址；
+# 网段已确认后，从 .99 向 .2 递减选第一个空闲地址；
 # 此时只做地址冲突检测，不再重复探测网关
 select_free_address() {
     prefix=$1
-    host=2
-    while [ "$host" -le 99 ]; do
+    host=99
+    while [ "$host" -ge 2 ]; do
         candidate="$prefix.$host"
         if address_free "$candidate"; then
             SELECTED_IP=$candidate
             return 0
         fi
-        host=$((host + 1))
+        host=$((host - 1))
     done
     return 1
 }
@@ -216,7 +216,7 @@ detect() {
     for gw in $GATEWAYS; do
         prefix=${gw%.*}
         # 先用最多 3 次随机探测确认网段活跃，
-        # 避免对每个错误网关都全量扫描 .2-.99
+        # 避免对每个错误网关都全量扫描 .99-.2
         if ! probe_subnet_randomly "$gw"; then
             # 随机候选都被占用时，退化为确定性顺序扫描
             probe_subnet_sequentially "$gw" || continue
