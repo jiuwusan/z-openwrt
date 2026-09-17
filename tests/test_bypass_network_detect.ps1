@@ -14,5 +14,8 @@ if ($script -notmatch 'arping not installed') { throw 'Missing arping warning is
 if ($script -notmatch 'probe_subnet_randomly') { throw 'Random subnet probing is missing' }
 if ($script -notmatch 'attempt.*-le 3') { throw 'Random probe retry limit is missing' }
 if ($script -notmatch 'value % 98 \+ 2') { throw 'Random probe range is missing' }
+if ($script -notmatch 'select_free_address') { throw 'Optimized address selection is missing' }
+if ($script -notmatch 'gateway_up.*current_gw.*address_free') { throw 'Current IP collision check is missing' }
+if ($script -notmatch 'arping -D.*-w 1') { throw 'ARP probe timeout is missing' }
 if ($script -notmatch 'start=100 and limit=150 remain relative') { throw 'DHCP pool preservation is missing' }
 Write-Output 'PASS: bypass-network-detect static checks'

@@ -17,8 +17,11 @@ address_free() {
     candidate=$1
     if command -v arping >/dev/null 2>&1; then
         # Duplicate-address detection: a reply means the candidate is used.
-        arping -D -I "$DEVICE" -c 2 "$candidate" >/dev/null 2>&1
-        return $?
+        arping -D -I "$DEVICE" -c 2 -w 1 "$candidate" >/dev/null 2>&1
+        result=$?
+        [ "$result" -eq 0 ] && return 0
+        [ "$result" -eq 1 ] || log "arping failed for $candidate (exit $result)"
+        return 1
     fi
 
     # Fallback for images without arping.  An existing neighbour entry or a
@@ -76,6 +79,20 @@ probe_subnet_sequentially() {
     host=2
     while [ "$host" -le 99 ]; do
         if temporary_probe "$gw" "$prefix.$host"; then
+            return 0
+        fi
+        host=$((host + 1))
+    done
+    return 1
+}
+
+select_free_address() {
+    prefix=$1
+    host=2
+    while [ "$host" -le 99 ]; do
+        candidate="$prefix.$host"
+        if address_free "$candidate"; then
+            SELECTED_IP=$candidate
             return 0
         fi
         host=$((host + 1))
@@ -153,7 +170,7 @@ detect() {
 
     current_ip=$(uci -q get network.lan.ipaddr || true)
     current_gw=$(uci -q get network.lan.gateway || true)
-    if valid_ipv4 "$current_ip" && valid_ipv4 "$current_gw" && gateway_up "$current_gw"; then
+    if valid_ipv4 "$current_ip" && valid_ipv4 "$current_gw" && gateway_up "$current_gw" && address_free "$current_ip"; then
         log "current gateway $current_gw is reachable"
         if configure "$current_gw" "$current_ip"; then
             [ "$DHCP_CHANGED" -eq 0 ] || /etc/init.d/dnsmasq restart >/dev/null 2>&1
@@ -174,20 +191,16 @@ detect() {
             probe_subnet_sequentially "$gw" || continue
         fi
 
-        # The subnet is known. Pick the first free stable address in order.
-        host=2
-        while [ "$host" -le 99 ]; do
-            candidate="$prefix.$host"
-            if temporary_probe "$gw" "$candidate"; then
-                if configure "$gw" "$candidate"; then
-                    /etc/init.d/network restart >/dev/null 2>&1
-                    /etc/init.d/dnsmasq restart >/dev/null 2>&1
-                    return 0
-                fi
-                log "could not commit configuration for $gw/$candidate"
+        # The subnet is known. Only ARP-probe addresses now; the gateway was
+        # already confirmed by the random subnet probe above.
+        if select_free_address "$prefix"; then
+            if configure "$gw" "$SELECTED_IP"; then
+                /etc/init.d/network restart >/dev/null 2>&1
+                /etc/init.d/dnsmasq restart >/dev/null 2>&1
+                return 0
             fi
-            host=$((host + 1))
-        done
+            log "could not commit configuration for $gw/$SELECTED_IP"
+        fi
     done
 
     log "no known upstream gateway reachable; keeping existing configuration"
