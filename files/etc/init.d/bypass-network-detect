@@ -228,6 +228,14 @@ configure() {
 }
 
 detect() {
+    # required in uci ip ping; arping remains optional and has a fallback.
+    for required in uci ip ping; do
+        if ! command -v "$required" >/dev/null 2>&1; then
+            log "required command missing: $required"
+            return 1
+        fi
+    done
+
     DEVICE="$(uci -q get network.lan.device || true)"
     [ -n "$DEVICE" ] || DEVICE=br-lan
     command -v arping >/dev/null 2>&1 || log "arping not installed; using weaker IP/neighbour fallback"
