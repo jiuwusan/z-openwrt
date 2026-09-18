@@ -21,6 +21,15 @@ log() { logger -t bypass-network-detect "$*"; }
 cleanup() { rmdir "$LOCK_DIR" 2>/dev/null || true; }
 valid_ipv4() { echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
 
+# 判断地址是否已经配置在本机接口上。无 arping 时，ping 本机地址会成功，
+# 必须先排除这种情况，否则当前地址会被误判为冲突。
+local_address() {
+    candidate=$1
+    ip -4 addr show dev "$DEVICE" 2>/dev/null |
+        awk '/inet / { sub(/\/.*/, "", $2); print $2 }' |
+        grep -Fxq "$candidate"
+}
+
 # 经指定接口 ping 目标（1 包、1 秒超时），用于判断网关是否可达
 gateway_up() {
     ping -c 1 -W 1 -I "$DEVICE" "$1" >/dev/null 2>&1
@@ -41,6 +50,7 @@ address_free() {
 
     # 无 arping 的固件走弱一级的兜底：已有邻居表项、或 ping 有响应，
     # 都说明地址已被占用。检测阶段会在日志中提示此方式较弱。
+    local_address "$candidate" && return 0
     if ip neigh show dev "$DEVICE" "$candidate" 2>/dev/null | grep -q 'lladdr'; then
         return 1
     fi
