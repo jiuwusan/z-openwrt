@@ -7,8 +7,8 @@ if ($script -notmatch '192\.168\.50\.1') { throw 'ASUS gateway is missing' }
 if ($script -notmatch '192\.168\.68\.1') { throw 'Deco gateway is missing' }
 if ($script -notmatch 'wanted_options=.*3,\$ip.*6,\$ip') { throw 'DHCP gateway/DNS options are not configured' }
 if ($script -notmatch 'add_list dhcp\.lan\.dhcp_option="\$option"') { throw 'DHCP options are not written as list entries' }
-if ($script -notmatch 'host=2') { throw 'Static-IP scan start is missing' }
-if ($script -notmatch 'host.*-le 99') { throw 'Static-IP scan upper bound is missing' }
+if ($script -notmatch 'host=99') { throw 'Static-IP scan start is missing' }
+if ($script -notmatch 'host.*-ge 2') { throw 'Static-IP scan lower bound is missing' }
 if ($script -notmatch 'ip neigh show dev') { throw 'Neighbour-table collision fallback is missing' }
 if ($script -notmatch 'arping not installed') { throw 'Missing arping warning is absent' }
 if ($script -notmatch 'probe_subnet_randomly') { throw 'Random subnet probing is missing' }
@@ -17,5 +17,5 @@ if ($script -notmatch 'value % 98 \+ 2') { throw 'Random probe range is missing'
 if ($script -notmatch 'select_free_address') { throw 'Optimized address selection is missing' }
 if ($script -notmatch 'gateway_up.*current_gw.*address_free') { throw 'Current IP collision check is missing' }
 if ($script -notmatch 'arping -D.*-w 1') { throw 'ARP probe timeout is missing' }
-if ($script -notmatch 'start=100 and limit=150 remain relative') { throw 'DHCP pool preservation is missing' }
+if ($script -notmatch 'start=100 / limit=150') { throw 'DHCP pool preservation is missing' }
 Write-Output 'PASS: bypass-network-detect static checks'
