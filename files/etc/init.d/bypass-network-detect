@@ -76,9 +76,11 @@ temporary_probe() {
     gw=$1
     ip=$2
     PROBE_RESULT=error
-    if ! address_free "$ip"; then
-        [ "$ADDRESS_CHECK_RESULT" = busy ] && PROBE_RESULT=busy
-        return 1
+    if [ "${3:-}" != already_free ]; then
+        if ! address_free "$ip"; then
+            [ "$ADDRESS_CHECK_RESULT" = busy ] && PROBE_RESULT=busy
+            return 1
+        fi
     fi
     ip -4 addr add "$ip/24" dev "$DEVICE" label "$DEVICE:detect" 2>/dev/null || return 1
     if gateway_up "$gw"; then
@@ -128,10 +130,12 @@ probe_subnet_sequentially() {
     prefix=${gw%.*}
     host=99
     while [ "$host" -ge 2 ]; do
-        if temporary_probe "$gw" "$prefix.$host"; then
-            return 0
+        if address_free "$prefix.$host"; then
+            if temporary_probe "$gw" "$prefix.$host" already_free; then
+                return 0
+            fi
         fi
-        [ "$PROBE_RESULT" = busy ] || return 1
+        [ "$ADDRESS_CHECK_RESULT" = busy ] || return 1
         host=$((host - 1))
     done
     return 1
