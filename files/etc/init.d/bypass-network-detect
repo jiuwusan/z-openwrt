@@ -105,6 +105,12 @@ random_host() {
     echo $((($$ + ${RANDOM:-0}) % 98 + 2))
 }
 
+# 从当前接口的默认路由提取上游网关；固定列表仅作为兜底。
+discover_gateway() {
+    ip -4 route show default dev "$DEVICE" 2>/dev/null |
+        awk '$1 == "default" { for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit } }'
+}
+
 # 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .99-.2。
 # 返回 1 时若 PROBE_RESULT=busy，说明随机候选均被占用（网段大概率活跃），
 # 值得顺序扫描；其他结果表示探测失败，应直接跳过，避免在异常接口上长时间扫描。
@@ -257,8 +263,15 @@ detect() {
     fi
 
     # 慢路径：遍历常见家用路由网关地址，按常见程度从高到低排列
-    GATEWAYS="192.168.1.1 192.168.0.1 192.168.3.1 192.168.31.1 192.168.50.1 192.168.68.1 192.168.100.1"
+    DISCOVERED_GATEWAY=$(discover_gateway)
+    valid_ipv4 "$DISCOVERED_GATEWAY" || DISCOVERED_GATEWAY=
+    GATEWAYS="$DISCOVERED_GATEWAY 192.168.1.1 192.168.0.1 192.168.3.1 192.168.31.1 192.168.50.1 192.168.68.1 192.168.100.1"
+    SEEN_GATEWAYS=
     for gw in $GATEWAYS; do
+        case " $SEEN_GATEWAYS " in
+            *" $gw "*) continue ;;
+        esac
+        SEEN_GATEWAYS="$SEEN_GATEWAYS $gw"
         prefix=${gw%.*}
         # 先用最多 3 次随机探测确认网段活跃。仅当随机候选均被占用
         # （PROBE_RESULT=busy）才顺序扫描；其他失败直接跳过，
