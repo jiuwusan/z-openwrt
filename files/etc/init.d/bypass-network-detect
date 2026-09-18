@@ -38,13 +38,19 @@ gateway_up() {
 # 判断候选地址是否空闲（无其他主机占用）
 address_free() {
     candidate=$1
+    ADDRESS_CHECK_RESULT=free
     if command -v arping >/dev/null 2>&1; then
         # arping -D 为重复地址检测：有应答说明地址已被占用。
         # 退出码 0 = 无人应答 = 空闲；1 = 已被占用；其他为出错。
         arping -D -I "$DEVICE" -c 2 -w 1 "$candidate" >/dev/null 2>&1
         result=$?
         [ "$result" -eq 0 ] && return 0
-        [ "$result" -eq 1 ] || log "arping failed for $candidate (exit $result)"
+        if [ "$result" -eq 1 ]; then
+            ADDRESS_CHECK_RESULT=busy
+        else
+            ADDRESS_CHECK_RESULT=error
+            log "arping failed for $candidate (exit $result)"
+        fi
         return 1
     fi
 
@@ -52,9 +58,13 @@ address_free() {
     # 都说明地址已被占用。检测阶段会在日志中提示此方式较弱。
     local_address "$candidate" && return 0
     if ip neigh show dev "$DEVICE" "$candidate" 2>/dev/null | grep -q 'lladdr'; then
+        ADDRESS_CHECK_RESULT=busy
         return 1
     fi
-    ping -c 1 -W 1 -I "$DEVICE" "$candidate" >/dev/null 2>&1 && return 1
+    if ping -c 1 -W 1 -I "$DEVICE" "$candidate" >/dev/null 2>&1; then
+        ADDRESS_CHECK_RESULT=busy
+        return 1
+    fi
     return 0
 }
 
@@ -65,14 +75,19 @@ address_free() {
 temporary_probe() {
     gw=$1
     ip=$2
-    ADDRESS_BUSY=0
-    address_free "$ip" || { ADDRESS_BUSY=1; return 1; }
-    ip -4 addr add "$ip/24" dev "$DEVICE" label "$DEVICE:detect" 2>/dev/null || { ADDRESS_BUSY=1; return 1; }
+    PROBE_RESULT=error
+    if ! address_free "$ip"; then
+        [ "$ADDRESS_CHECK_RESULT" = busy ] && PROBE_RESULT=busy
+        return 1
+    fi
+    ip -4 addr add "$ip/24" dev "$DEVICE" label "$DEVICE:detect" 2>/dev/null || return 1
     if gateway_up "$gw"; then
         ip -4 addr del "$ip/24" dev "$DEVICE" 2>/dev/null
+        PROBE_RESULT=ok
         return 0
     fi
     ip -4 addr del "$ip/24" dev "$DEVICE" 2>/dev/null
+    PROBE_RESULT=unreachable
     return 1
 }
 
@@ -89,8 +104,8 @@ random_host() {
 }
 
 # 用随机地址探测网段，最多 3 次；避免对每个错误网关都全量扫描 .99-.2。
-# 返回 1 时若 ADDRESS_BUSY=1，说明随机候选均被占用（网段大概率活跃），
-# 值得顺序扫描；ADDRESS_BUSY=0 则是网关不可达，网段不存在，应直接跳过。
+# 返回 1 时若 PROBE_RESULT=busy，说明随机候选均被占用（网段大概率活跃），
+# 值得顺序扫描；其他结果表示探测失败，应直接跳过，避免在异常接口上长时间扫描。
 probe_subnet_randomly() {
     gw=$1
     prefix=${gw%.*}
@@ -101,7 +116,7 @@ probe_subnet_randomly() {
         if temporary_probe "$gw" "$candidate"; then
             return 0
         fi
-        [ "$ADDRESS_BUSY" -eq 1 ] || return 1
+        [ "$PROBE_RESULT" = busy ] || return 1
         attempt=$((attempt + 1))
     done
     return 1
@@ -116,6 +131,7 @@ probe_subnet_sequentially() {
         if temporary_probe "$gw" "$prefix.$host"; then
             return 0
         fi
+        [ "$PROBE_RESULT" = busy ] || return 1
         host=$((host - 1))
     done
     return 1
@@ -241,10 +257,10 @@ detect() {
     for gw in $GATEWAYS; do
         prefix=${gw%.*}
         # 先用最多 3 次随机探测确认网段活跃。仅当随机候选均被占用
-        # （ADDRESS_BUSY=1）才顺序扫描；网关不可达的死网段直接跳过，
+        # （PROBE_RESULT=busy）才顺序扫描；其他失败直接跳过，
         # 避免每个错误网关都耗时的全量扫描。
         if ! probe_subnet_randomly "$gw"; then
-            [ "$ADDRESS_BUSY" -eq 1 ] || continue
+            [ "$PROBE_RESULT" = busy ] || continue
             # 随机候选都被占用时，退化为确定性递减扫描
             probe_subnet_sequentially "$gw" || continue
         fi
