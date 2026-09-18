@@ -19,7 +19,21 @@ LOCK_DIR=/var/run/bypass-network-detect.lock
 
 log() { logger -t bypass-network-detect "$*"; }
 cleanup() { rmdir "$LOCK_DIR" 2>/dev/null || true; }
-valid_ipv4() { echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
+valid_ipv4() {
+    value=$1
+    case "$value" in
+        ''|*[!0-9.]*) return 1 ;;
+    esac
+    old_ifs=$IFS
+    IFS=.
+    set -- $value
+    IFS=$old_ifs
+    [ "$#" -eq 4 ] || return 1
+    for octet in "$@"; do
+        [ -n "$octet" ] || return 1
+        [ "$octet" -le 255 ] 2>/dev/null || return 1
+    done
+}
 
 # 判断地址是否已经配置在本机接口上。无 arping 时，ping 本机地址会成功，
 # 必须先排除这种情况，否则当前地址会被误判为冲突。
