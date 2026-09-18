@@ -207,13 +207,14 @@ set_network_option() {
 configure() {
     gw=$1
     ip=$2
+    netmask=${3:-255.255.255.0}
     NETWORK_CHANGED=0
     DHCP_CHANGED=0
 
     set_network_option network.lan.proto static
     set_network_option network.lan.device "$DEVICE"
     set_network_option network.lan.ipaddr "$ip"
-    set_network_option network.lan.netmask 255.255.255.0
+    set_network_option network.lan.netmask "$netmask"
     set_network_option network.lan.gateway "$gw"
     set_network_option network.lan.multipath off
 
@@ -291,9 +292,11 @@ detect() {
     # 则不换网段，仅刷新 DHCP/DNS 选项后直接返回
     current_ip=$(uci -q get network.lan.ipaddr || true)
     current_gw=$(uci -q get network.lan.gateway || true)
+    current_netmask=$(uci -q get network.lan.netmask || true)
+    valid_ipv4 "$current_netmask" || current_netmask=255.255.255.0
     if valid_ipv4 "$current_ip" && valid_ipv4 "$current_gw" && gateway_up "$current_gw" && address_free "$current_ip"; then
         log "current gateway $current_gw is reachable"
-        if configure "$current_gw" "$current_ip"; then
+        if configure "$current_gw" "$current_ip" "$current_netmask"; then
             if [ "$NETWORK_CHANGED" -ne 0 ] && ! /etc/init.d/network restart >/dev/null 2>&1; then
                 log "failed to apply network configuration"
                 return 1
@@ -329,7 +332,7 @@ detect() {
         # 网段已确认：网关连通性在上面已验证，
         # 这里只需挑一个空闲地址并写入配置
         if select_free_address "$prefix"; then
-            if configure "$gw" "$SELECTED_IP"; then
+            if configure "$gw" "$SELECTED_IP" 255.255.255.0; then
                 if ! /etc/init.d/network restart >/dev/null 2>&1; then
                     log "failed to apply network configuration for $gw/$SELECTED_IP"
                     return 1
