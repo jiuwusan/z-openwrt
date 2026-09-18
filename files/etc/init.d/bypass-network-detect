@@ -240,6 +240,11 @@ detect() {
             log "already running (pid $stale_pid)"
             return 0
         fi
+        stale_pid_check=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+        if [ "$stale_pid" != "$stale_pid_check" ]; then
+            log "lock changed while checking; leaving it intact"
+            return 0
+        fi
         log "removing stale lock (pid ${stale_pid:-unknown})"
         rm -rf "$LOCK_DIR"
         mkdir "$LOCK_DIR" 2>/dev/null || { log "cannot acquire lock"; return 0; }
