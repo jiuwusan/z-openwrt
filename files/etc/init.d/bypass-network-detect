@@ -349,9 +349,9 @@ detect() {
     return 1
 }
 
-# 开机时等 3 秒让网络栈/接口就绪后再探测
+# 开机时等 10 秒让单网口 bridge、路由和上游网络稳定后再探测
 boot() {
-    sleep 3
+    sleep 10
     detect
 }
 
