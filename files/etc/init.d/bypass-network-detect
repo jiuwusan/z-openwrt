@@ -228,6 +228,7 @@ detect() {
     if valid_ipv4 "$current_ip" && valid_ipv4 "$current_gw" && gateway_up "$current_gw" && address_free "$current_ip"; then
         log "current gateway $current_gw is reachable"
         if configure "$current_gw" "$current_ip"; then
+            [ "$NETWORK_CHANGED" -eq 0 ] || /etc/init.d/network restart >/dev/null 2>&1
             [ "$DHCP_CHANGED" -eq 0 ] || /etc/init.d/dnsmasq restart >/dev/null 2>&1
         else
             log "failed to refresh DHCP options"
